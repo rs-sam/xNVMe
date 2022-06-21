@@ -9,7 +9,7 @@ Source:         %{url}/releases/download/v%{version}/xnvme-%{version}.tar.gz
 
 BuildRequires:  gcc gcc-g++ meson pkgconfig
 BuildRequires:  libaio-devel
-
+BuildRequires:	diffutils findutils make patch procps
 BuildRequires:  CUnit-devel libuuid-devel numactl-devel openssl-devel python3-pyelftools
 
 %description
