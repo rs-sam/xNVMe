@@ -17,6 +17,70 @@
 #include <xnvme_be_windows_nvme.h>
 
 /**
+ * For issuing the Vendor Specific commands in Windows
+ *
+ * @param dev Device handle obtained with xnvme_dev_open() / xnvme_dev_openf()
+ *
+ * @return On success, 0 is returned. On error, `GetLastError()` is returned.
+ */
+int
+xnvme_be_windows_vs_command(struct xnvme_dev *dev, void* dbuf, size_t dbuf_nbytes, void *XNVME_UNUSED(mbuf), size_t mbuf_nbytes, int admin){
+   PSTORAGE_PROTOCOL_COMMAND protocol_cmd = NULL;
+   struct xnvme_spec_cmd_common *command = NULL;
+   int err = 0;
+   unsigned long buff_len = 0;
+   unsigned long ret_len = 0;
+   void *buffer = NULL;
+
+   struct xnvme_be_windows_state *state = (void*)dev->be.state;
+   // Allocate buffer for use.
+   buff_len = __builtin_offsetof(STORAGE_PROTOCOL_COMMAND, Command) +
+       sizeof(struct xnvme_spec_cmd_common) + mbuf_nbytes;
+
+   buffer = calloc(1, buff_len);
+   if (buffer == NULL) {
+	   err = GetLastError();
+	   XNVME_DEBUG("malloc failed err:%d", err);
+	   goto error_exit;
+   }
+
+   protocol_cmd = (PSTORAGE_PROTOCOL_COMMAND)buffer;
+   protocol_cmd->Version = STORAGE_PROTOCOL_STRUCTURE_VERSION;
+   protocol_cmd->Length = sizeof(STORAGE_PROTOCOL_COMMAND);
+   protocol_cmd->ProtocolType = ProtocolTypeNvme;
+   protocol_cmd->Flags = STORAGE_PROTOCOL_COMMAND_FLAG_ADAPTER_REQUEST;
+   protocol_cmd->CommandLength = STORAGE_PROTOCOL_COMMAND_LENGTH_NVME;
+   protocol_cmd->ErrorInfoLength = 0;
+   protocol_cmd->DataFromDeviceTransferLength = mbuf_nbytes;
+   protocol_cmd->TimeOutValue = 10;
+   protocol_cmd->ErrorInfoOffset = 0;
+   protocol_cmd->DataFromDeviceBufferOffset =
+	   __builtin_offsetof(STORAGE_PROTOCOL_COMMAND, Command) + sizeof(struct xnvme_spec_cmd_common);
+   protocol_cmd->CommandSpecific =
+	   admin ? STORAGE_PROTOCOL_SPECIFIC_NVME_ADMIN_COMMAND : STORAGE_PROTOCOL_SPECIFIC_NVME_NVM_COMMAND;
+
+   command = (struct xnvme_spec_cmd_common*)protocol_cmd->Command;
+
+   memcpy(command, dbuf, dbuf_nbytes);
+
+   err = DeviceIoControl(state->sync_handle, IOCTL_STORAGE_PROTOCOL_COMMAND, buffer,
+	   buff_len, buffer, buff_len,
+	   &ret_len, NULL);
+   if (ret_len == buff_len) {
+	   XNVME_DEBUG("NVMe Admin VendorSpecific Command passed.");
+   }
+   else {
+	   XNVME_DEBUG("NVMe Admin VendorSpecific Command failed with error %d.", err);
+   }
+
+error_exit:
+
+   free(buffer);
+
+   return err;
+}
+
+/**
  * For issuing the format command in Windows
  *
  * @param dev Device handle obtained with xnvme_dev_open() / xnvme_dev_openf()
@@ -170,7 +234,7 @@ error_exit:
 
 int
 xnvme_be_windows_nvme_cmd_admin(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes,
-				void *XNVME_UNUSED(mbuf), size_t XNVME_UNUSED(mbuf_nbytes))
+				void *mbuf, size_t mbuf_nbytes)
 {
 	int ret = 0;
 
@@ -184,6 +248,10 @@ xnvme_be_windows_nvme_cmd_admin(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t db
 
 	case XNVME_SPEC_NVM_OPC_FMT:
 		ret = xnvme_be_windows_format(ctx->dev);
+		break;
+
+	case 192 ... 255:
+	    ret = xnvme_be_windows_vs_command(ctx->dev, dbuf, dbuf_nbytes, mbuf, mbuf_nbytes, 1);
 		break;
 
 	default:
@@ -282,7 +350,7 @@ xnvme_be_windows_write(HANDLE handle, struct xnvme_spec_cmd cmd, void *dbuf, siz
 
 int
 xnvme_be_windows_sync_nvme_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t dbuf_nbytes,
-				  void *XNVME_UNUSED(mbuf), size_t XNVME_UNUSED(mbuf_nbytes))
+				  void *mbuf, size_t mbuf_nbytes)
 {
 	struct xnvme_be_windows_state *state = (void *)ctx->dev->be.state;
 	int ret = 0;
@@ -294,6 +362,10 @@ xnvme_be_windows_sync_nvme_cmd_io(struct xnvme_cmd_ctx *ctx, void *dbuf, size_t 
 
 	case XNVME_SPEC_NVM_OPC_WRITE:
 		ret = xnvme_be_windows_write(state->sync_handle, ctx->cmd, dbuf, dbuf_nbytes);
+		break;
+
+	case 192 ... 255:
+	    ret = xnvme_be_windows_vs_command(ctx->dev, dbuf, dbuf_nbytes, mbuf, mbuf_nbytes, 0);
 		break;
 
 	default:
